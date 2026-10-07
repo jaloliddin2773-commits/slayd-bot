@@ -7,9 +7,7 @@ genai.configure(api_key=GEMINI_API_KEY)
 
 # Faol va qo'llab-quvvatlanadigan fallback modellar ro'yxati
 FALLBACK_MODELS = [
-    "gemini-2.5-flash",
-    "gemini-1.5-flash",
-    "gemini-1.5-pro"
+    "gemini-2.5-flash"
 ]
 
 SYSTEM_PROMPT = """
