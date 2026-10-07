@@ -1,124 +1,202 @@
 import json
 import os
 import re
-import time
+from pathlib import Path
 
 import requests
 from pptx import Presentation
 from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_SHAPE
+from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
 from pptx.util import Inches, Pt
 
 
-# ============================================================
-# SETTINGS
-# ============================================================
+# =========================================================
+# CONFIG
+# =========================================================
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 
-# Render'da GEMINI_MODEL bo'lmasa, shu model ishlaydi
-GEMINI_MODEL = os.getenv(
-    "GEMINI_MODEL",
-    "gemini-2.5-flash"
-).strip()
+DEFAULT_MODELS = [
+    "gemini-3.5-flash-lite",
+    "gemini-3.6-flash",
+    "gemini-3.7-flash",
+    "gemini-3.8-flash",
+]
+
+GEMINI_MODELS = [
+    x.strip()
+    for x in os.getenv("GEMINI_MODELS", ",".join(DEFAULT_MODELS)).split(",")
+    if x.strip()
+]
+
+GEMINI_URL = (
+    "https://generativelanguage.googleapis.com/v1beta/models/"
+    "{model}:generateContent"
+)
 
 
-# ============================================================
-# COLORS
-# ============================================================
-
-DARK = RGBColor(31, 42, 68)
-ORANGE = RGBColor(242, 122, 26)
-LIGHT = RGBColor(247, 245, 240)
-WHITE = RGBColor(255, 255, 255)
-GRAY = RGBColor(208, 213, 224)
-
-
-# ============================================================
+# =========================================================
 # AI PROMPT
-# ============================================================
+# =========================================================
 
-PROMPT = """
-Sen professional PowerPoint prezentatsiya tayyorlovchi AI yordamchisan.
+PROMPT = r"""
+You are a professional presentation strategist and educational content designer.
 
-Foydalanuvchi so'rovi:
+Create a complete PowerPoint presentation based on the user's request.
+
+USER REQUEST:
 __REQUEST__
 
-Vazifa:
-Ushbu mavzu asosida professional prezentatsiya yarat.
+Your job:
+1. Understand the topic.
+2. Decide the best logical structure.
+3. Create useful, accurate and engaging slide content.
+4. Avoid unnecessary text.
+5. Make every slide visually different when appropriate.
+6. Use concise professional language.
+7. If the user specifies a language, use that language.
+8. If no language is specified, use the language of the user's request.
+9. Do not invent statistics. If exact statistics are unknown, avoid numerical claims.
+10. Make the presentation suitable for a real classroom, business meeting or public presentation.
 
-Qoidalar:
+Return ONLY valid JSON.
 
-- Foydalanuvchi qaysi tilda yozgan bo'lsa, shu tilda yoz.
-- Agar foydalanuvchi slayd sonini ko'rsatgan bo'lsa, aynan shuncha slayd yarat.
-- Agar son ko'rsatilmagan bo'lsa, 7 ta slayd yarat.
-- Minimal 3 ta, maksimal 12 ta slayd.
-- Birinchi slayd titul slayd bo'lsin.
-- Birinchi slaydda bullets bo'lmasin.
-- Birinchi slaydda subtitle bo'lsin.
-- Oxirgi slayd xulosa bo'lsin.
-- Oddiy slaydlarda 3-5 ta qisqa bullet bo'lsin.
-- Har bir bullet 15 so'zdan oshmasin.
-- Ma'lumotlar tushunarli va mantiqiy bo'lsin.
-- Bir xil ma'lumotni takrorlama.
-
-FAQAT JSON qaytar.
-Markdown ishlatma.
-```json ishlatma.
-Hech qanday qo'shimcha izoh yozma.
-
-JSON formati:
+JSON structure:
 
 {
-  "title": "Prezentatsiya nomi",
+  "title": "Presentation title",
+  "subtitle": "Short subtitle",
+  "language": "uz",
   "slides": [
     {
-      "title": "Kirish",
-      "subtitle": "Qisqa izoh",
-      "bullets": []
+      "title": "Slide title",
+      "layout": "bullets",
+      "bullets": [
+        "Short point",
+        "Short point",
+        "Short point"
+      ]
     },
     {
-      "title": "Asosiy mavzu",
-      "subtitle": "",
-      "bullets": [
-        "Birinchi fikr",
-        "Ikkinchi fikr",
-        "Uchinchi fikr"
+      "title": "Slide title",
+      "layout": "two_column",
+      "left_title": "Left section",
+      "left": [
+        "Point",
+        "Point"
+      ],
+      "right_title": "Right section",
+      "right": [
+        "Point",
+        "Point"
       ]
+    },
+    {
+      "title": "Slide title",
+      "layout": "stats",
+      "stats": [
+        {
+          "value": "01",
+          "label": "Short label"
+        },
+        {
+          "value": "02",
+          "label": "Short label"
+        },
+        {
+          "value": "03",
+          "label": "Short label"
+        }
+      ]
+    },
+    {
+      "title": "Slide title",
+      "layout": "quote",
+      "quote": "Important short statement",
+      "source": "Source or author"
     }
   ]
 }
+
+Allowed layouts:
+- bullets
+- two_column
+- stats
+- quote
+
+Rules:
+- Usually create 6-10 slides unless the user requests another number.
+- If the user explicitly gives a slide count, follow it.
+- Do not put more than 5 bullets on one slide.
+- Keep bullets short.
+- Do not repeat the same information.
+- The first slide is automatically generated by the application, so the "slides" array should contain the CONTENT slides only.
+- Return JSON only.
 """
 
 
-# ============================================================
+# =========================================================
+# HELPERS
+# =========================================================
+
+def clean_json(text: str) -> str:
+    text = text.strip()
+
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+
+    start = text.find("{")
+    end = text.rfind("}")
+
+    if start == -1 or end == -1:
+        raise ValueError("AI returned invalid JSON.")
+
+    return text[start:end + 1]
+
+
+def extract_response_text(data: dict) -> str:
+    candidates = data.get("candidates", [])
+
+    if not candidates:
+        raise RuntimeError("Gemini returned no candidates.")
+
+    candidate = candidates[0]
+
+    content = candidate.get("content", {})
+    parts = content.get("parts", [])
+
+    texts = []
+
+    for part in parts:
+        if isinstance(part, dict) and "text" in part:
+            texts.append(part["text"])
+
+    result = "\n".join(texts).strip()
+
+    if not result:
+        raise RuntimeError("Gemini returned an empty response.")
+
+    return result
+
+
+# =========================================================
 # GEMINI
-# ============================================================
+# =========================================================
 
 def ask_gemini(request_text: str) -> dict:
-
     if not GEMINI_API_KEY:
         raise RuntimeError(
-            "GEMINI_API_KEY topilmadi. "
-            "Render Environment bo'limini tekshiring."
+            "GEMINI_API_KEY is missing in the server environment."
         )
 
-    # .format() ISHLATILMAYDI!
-    # Shuning uchun JSON {} sababli KeyError bo'lmaydi.
-    prompt = PROMPT.replace(
-        "__REQUEST__",
-        request_text
-    )
-
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        + GEMINI_MODEL
-        + ":generateContent"
-    )
+    prompt = PROMPT.replace("__REQUEST__", request_text.strip())
 
     payload = {
         "contents": [
             {
+                "role": "user",
                 "parts": [
                     {
                         "text": prompt
@@ -127,469 +205,530 @@ def ask_gemini(request_text: str) -> dict:
             }
         ],
         "generationConfig": {
+            "responseMimeType": "application/json",
             "temperature": 0.7,
-            "responseMimeType": "application/json"
+            "maxOutputTokens": 12000
         }
     }
 
-    last_error = None
+    errors = []
 
-    # Gemini vaqtincha band bo'lsa 4 marta urinadi
-    for attempt in range(4):
+    for model in GEMINI_MODELS:
+        url = GEMINI_URL.format(model=model)
 
         try:
-
             response = requests.post(
                 url,
-                params={
-                    "key": GEMINI_API_KEY
+                headers={
+                    "x-goog-api-key": GEMINI_API_KEY,
+                    "Content-Type": "application/json",
                 },
                 json=payload,
-                timeout=180
+                timeout=90,
             )
 
-            # Vaqtinchalik server xatolari
-            if response.status_code in (
-                429,
-                500,
-                502,
-                503,
-                504
-            ):
-
-                last_error = (
-                    f"Gemini HTTP {response.status_code}"
+            if response.status_code in (429, 500, 502, 503, 504):
+                errors.append(
+                    f"{model}: HTTP {response.status_code}"
                 )
-
-                if attempt < 3:
-                    time.sleep(3 * (attempt + 1))
-                    continue
-
-                raise RuntimeError(
-                    "Gemini serveri vaqtincha band. "
-                    "Bir necha daqiqadan keyin qayta urinib ko'ring."
-                )
+                continue
 
             response.raise_for_status()
 
-            result = response.json()
+            data = response.json()
 
-            candidates = result.get(
-                "candidates",
-                []
-            )
+            raw_text = extract_response_text(data)
+            json_text = clean_json(raw_text)
 
-            if not candidates:
-                raise RuntimeError(
-                    "Gemini javob qaytarmadi."
-                )
+            result = json.loads(json_text)
 
-            content = candidates[0].get(
-                "content",
-                {}
-            )
+            if not isinstance(result, dict):
+                raise ValueError("AI response is not an object.")
 
-            parts = content.get(
-                "parts",
-                []
-            )
+            slides = result.get("slides")
 
-            if not parts:
-                raise RuntimeError(
-                    "Gemini javobida matn topilmadi."
-                )
+            if not isinstance(slides, list) or not slides:
+                raise ValueError("AI did not return slides.")
 
-            text = parts[0].get(
-                "text",
-                ""
-            ).strip()
+            result["_model"] = model
 
-            if not text:
-                raise RuntimeError(
-                    "Gemini bo'sh javob qaytardi."
-                )
+            return result
 
-            # ==================================================
-            # CLEAN JSON
-            # ==================================================
+        except requests.RequestException as exc:
+            errors.append(f"{model}: {exc}")
 
-            text = re.sub(
-                r"^```json\s*",
-                "",
-                text,
-                flags=re.IGNORECASE
-            )
-
-            text = re.sub(
-                r"^```\s*",
-                "",
-                text
-            )
-
-            text = re.sub(
-                r"\s*```$",
-                "",
-                text
-            )
-
-            text = text.strip()
-
-            # JSON parse
-            try:
-
-                data = json.loads(text)
-
-            except json.JSONDecodeError:
-
-                # Agar Gemini ortiqcha matn qo'shgan bo'lsa
-                start = text.find("{")
-                end = text.rfind("}")
-
-                if start == -1 or end == -1:
-                    raise RuntimeError(
-                        "Gemini valid JSON qaytarmadi."
-                    )
-
-                data = json.loads(
-                    text[start:end + 1]
-                )
-
-            # ==================================================
-            # VALIDATION
-            # ==================================================
-
-            if not isinstance(data, dict):
-                raise RuntimeError(
-                    "Gemini noto'g'ri format qaytardi."
-                )
-
-            slides = data.get(
-                "slides",
-                []
-            )
-
-            if not isinstance(slides, list):
-                raise RuntimeError(
-                    "Slaydlar ro'yxati topilmadi."
-                )
-
-            if len(slides) == 0:
-                raise RuntimeError(
-                    "Gemini hech qanday slayd yaratmadi."
-                )
-
-            # Maksimum 12 ta
-            slides = slides[:12]
-
-            # Har bir slaydni standartlashtiramiz
-            cleaned_slides = []
-
-            for slide in slides:
-
-                if not isinstance(slide, dict):
-                    continue
-
-                title = str(
-                    slide.get(
-                        "title",
-                        "Slayd"
-                    )
-                )
-
-                subtitle = str(
-                    slide.get(
-                        "subtitle",
-                        ""
-                    )
-                )
-
-                bullets = slide.get(
-                    "bullets",
-                    []
-                )
-
-                if not isinstance(
-                    bullets,
-                    list
-                ):
-                    bullets = []
-
-                bullets = [
-                    str(x).strip()
-                    for x in bullets
-                    if str(x).strip()
-                ]
-
-                cleaned_slides.append({
-                    "title": title,
-                    "subtitle": subtitle,
-                    "bullets": bullets
-                })
-
-            if not cleaned_slides:
-                raise RuntimeError(
-                    "Slaydlar qayta ishlanmadi."
-                )
-
-            return {
-                "title": str(
-                    data.get(
-                        "title",
-                        "Taqdimot"
-                    )
-                ),
-                "slides": cleaned_slides
-            }
-
-        except requests.RequestException as error:
-
-            last_error = str(error)
-
-            if attempt < 3:
-                time.sleep(3 * (attempt + 1))
-                continue
-
-            raise RuntimeError(
-                f"Gemini bilan bog'lanishda xatolik: {last_error}"
-            )
+        except (ValueError, json.JSONDecodeError, RuntimeError) as exc:
+            errors.append(f"{model}: {exc}")
 
     raise RuntimeError(
-        last_error or "Noma'lum Gemini xatosi."
+        "AI xizmatlari vaqtincha ishlamadi.\n\n"
+        + "\n".join(errors)
     )
 
 
-# ============================================================
-# POWERPOINT FUNCTIONS
-# ============================================================
+# =========================================================
+# POWERPOINT DESIGN
+# =========================================================
 
-def fill_background(slide, color):
+SLIDE_W = Inches(13.333)
+SLIDE_H = Inches(7.5)
 
-    fill = slide.background.fill
+BG = RGBColor(248, 249, 252)
+DARK = RGBColor(22, 27, 34)
+MUTED = RGBColor(92, 99, 112)
+ACCENT = RGBColor(245, 102, 45)
+WHITE = RGBColor(255, 255, 255)
+LIGHT = RGBColor(232, 235, 240)
 
-    fill.solid()
 
-    fill.fore_color.rgb = color
+def add_background(slide):
+    shape = slide.shapes.add_shape(
+        MSO_SHAPE.RECTANGLE,
+        0,
+        0,
+        SLIDE_W,
+        SLIDE_H,
+    )
+
+    shape.fill.solid()
+    shape.fill.fore_color.rgb = BG
+    shape.line.fill.background()
+
+
+def add_top_accent(slide):
+    shape = slide.shapes.add_shape(
+        MSO_SHAPE.RECTANGLE,
+        0,
+        0,
+        Inches(0.16),
+        SLIDE_H,
+    )
+
+    shape.fill.solid()
+    shape.fill.fore_color.rgb = ACCENT
+    shape.line.fill.background()
+
+
+def add_footer(slide, number):
+    line = slide.shapes.add_shape(
+        MSO_SHAPE.RECTANGLE,
+        Inches(0.65),
+        Inches(7.05),
+        Inches(12.0),
+        Inches(0.01),
+    )
+
+    line.fill.solid()
+    line.fill.fore_color.rgb = LIGHT
+    line.line.fill.background()
+
+    box = slide.shapes.add_textbox(
+        Inches(11.8),
+        Inches(7.08),
+        Inches(0.7),
+        Inches(0.25),
+    )
+
+    p = box.text_frame.paragraphs[0]
+    p.text = str(number)
+    p.font.size = Pt(9)
+    p.font.color.rgb = MUTED
+    p.alignment = PP_ALIGN.RIGHT
 
 
 def add_text(
     slide,
+    text,
     x,
     y,
-    width,
-    height,
-    text,
-    size,
-    color,
-    bold=False
+    w,
+    h,
+    size=20,
+    bold=False,
+    color=DARK,
+    align=PP_ALIGN.LEFT,
 ):
-
     box = slide.shapes.add_textbox(
-        Inches(x),
-        Inches(y),
-        Inches(width),
-        Inches(height)
+        x,
+        y,
+        w,
+        h,
     )
 
-    frame = box.text_frame
+    tf = box.text_frame
+    tf.clear()
+    tf.word_wrap = True
+    tf.vertical_anchor = MSO_ANCHOR.TOP
 
-    frame.word_wrap = True
+    p = tf.paragraphs[0]
+    p.text = str(text)
+    p.alignment = align
 
-    paragraph = frame.paragraphs[0]
-
-    paragraph.text = str(text)
-
-    paragraph.font.size = Pt(size)
-
-    paragraph.font.bold = bold
-
-    paragraph.font.color.rgb = color
+    p.font.name = "Aptos"
+    p.font.size = Pt(size)
+    p.font.bold = bold
+    p.font.color.rgb = color
 
     return box
 
 
-# ============================================================
-# BUILD PPTX
-# ============================================================
-
-def build_pptx(data: dict, path: str) -> str:
-
-    presentation = Presentation()
-
-    # 16:9
-    presentation.slide_width = Inches(13.333)
-
-    presentation.slide_height = Inches(7.5)
-
-    blank = presentation.slide_layouts[6]
-
-    slides = data.get(
-        "slides",
-        []
+def add_title(slide, title):
+    add_text(
+        slide,
+        title,
+        Inches(0.8),
+        Inches(0.55),
+        Inches(11.5),
+        Inches(0.8),
+        size=28,
+        bold=True,
+        color=DARK,
     )
 
-    presentation_title = data.get(
-        "title",
-        "Taqdimot"
+
+def add_bullet_list(slide, bullets, x, y, w, h):
+    box = slide.shapes.add_textbox(x, y, w, h)
+
+    tf = box.text_frame
+    tf.clear()
+    tf.word_wrap = True
+
+    for i, bullet in enumerate(bullets[:5]):
+        p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+
+        p.text = str(bullet)
+        p.level = 0
+        p.font.name = "Aptos"
+        p.font.size = Pt(20)
+        p.font.color.rgb = DARK
+        p.space_after = Pt(16)
+
+        p.text = "• " + p.text
+
+    return box
+
+
+def add_card(slide, x, y, w, h):
+    card = slide.shapes.add_shape(
+        MSO_SHAPE.ROUNDED_RECTANGLE,
+        x,
+        y,
+        w,
+        h,
     )
 
-    for index, slide_data in enumerate(slides):
+    card.fill.solid()
+    card.fill.fore_color.rgb = WHITE
+    card.line.color.rgb = LIGHT
 
-        slide = presentation.slides.add_slide(
-            blank
+    return card
+
+
+def render_bullets(slide, data):
+    bullets = data.get("bullets", [])
+
+    add_bullet_list(
+        slide,
+        bullets,
+        Inches(1.0),
+        Inches(1.65),
+        Inches(11.2),
+        Inches(4.9),
+    )
+
+
+def render_two_column(slide, data):
+    add_card(
+        slide,
+        Inches(0.75),
+        Inches(1.55),
+        Inches(5.85),
+        Inches(4.9),
+    )
+
+    add_card(
+        slide,
+        Inches(6.75),
+        Inches(1.55),
+        Inches(5.85),
+        Inches(4.9),
+    )
+
+    add_text(
+        slide,
+        data.get("left_title", "Left"),
+        Inches(1.05),
+        Inches(1.9),
+        Inches(5.1),
+        Inches(0.5),
+        size=21,
+        bold=True,
+        color=ACCENT,
+    )
+
+    add_text(
+        slide,
+        data.get("right_title", "Right"),
+        Inches(7.05),
+        Inches(1.9),
+        Inches(5.1),
+        Inches(0.5),
+        size=21,
+        bold=True,
+        color=ACCENT,
+    )
+
+    add_bullet_list(
+        slide,
+        data.get("left", []),
+        Inches(1.05),
+        Inches(2.55),
+        Inches(5.0),
+        Inches(3.3),
+    )
+
+    add_bullet_list(
+        slide,
+        data.get("right", []),
+        Inches(7.05),
+        Inches(2.55),
+        Inches(5.0),
+        Inches(3.3),
+    )
+
+
+def render_stats(slide, data):
+    stats = data.get("stats", [])[:4]
+
+    count = max(len(stats), 1)
+    card_w = 2.7
+    gap = 0.35
+
+    total = count * card_w + (count - 1) * gap
+    start_x = (13.333 - total) / 2
+
+    for i, stat in enumerate(stats):
+        x = Inches(start_x + i * (card_w + gap))
+
+        add_card(
+            slide,
+            x,
+            Inches(2.0),
+            Inches(card_w),
+            Inches(3.4),
         )
 
-        title = slide_data.get(
-            "title",
-            "Slayd"
+        add_text(
+            slide,
+            stat.get("value", ""),
+            x + Inches(0.2),
+            Inches(2.55),
+            Inches(card_w - 0.4),
+            Inches(0.9),
+            size=32,
+            bold=True,
+            color=ACCENT,
+            align=PP_ALIGN.CENTER,
         )
 
-        subtitle = slide_data.get(
-            "subtitle",
-            ""
+        add_text(
+            slide,
+            stat.get("label", ""),
+            x + Inches(0.2),
+            Inches(3.55),
+            Inches(card_w - 0.4),
+            Inches(1.1),
+            size=16,
+            color=MUTED,
+            align=PP_ALIGN.CENTER,
         )
 
-        bullets = slide_data.get(
-            "bullets",
-            []
+
+def render_quote(slide, data):
+    quote = data.get("quote", "")
+    source = data.get("source", "")
+
+    add_card(
+        slide,
+        Inches(1.2),
+        Inches(1.65),
+        Inches(10.9),
+        Inches(4.6),
+    )
+
+    add_text(
+        slide,
+        "“",
+        Inches(1.7),
+        Inches(2.0),
+        Inches(1.0),
+        Inches(1.0),
+        size=55,
+        bold=True,
+        color=ACCENT,
+    )
+
+    add_text(
+        slide,
+        quote,
+        Inches(2.0),
+        Inches(2.45),
+        Inches(9.3),
+        Inches(2.0),
+        size=26,
+        bold=True,
+        color=DARK,
+        align=PP_ALIGN.CENTER,
+    )
+
+    if source:
+        add_text(
+            slide,
+            source,
+            Inches(2.0),
+            Inches(4.85),
+            Inches(9.3),
+            Inches(0.5),
+            size=15,
+            color=MUTED,
+            align=PP_ALIGN.CENTER,
         )
 
-        # ====================================================
-        # TITLE SLIDE
-        # ====================================================
 
-        if index == 0:
+def render_content_slide(slide, data, number):
+    add_background(slide)
+    add_top_accent(slide)
+    add_title(slide, data.get("title", "Untitled"))
 
-            fill_background(
-                slide,
-                DARK
-            )
+    layout = data.get("layout", "bullets")
 
-            # Orange line
-            line = slide.shapes.add_shape(
-                MSO_SHAPE.RECTANGLE,
-                Inches(0.8),
-                Inches(3.0),
-                Inches(1.7),
-                Inches(0.12)
-            )
+    if layout == "two_column":
+        render_two_column(slide, data)
 
-            line.fill.solid()
+    elif layout == "stats":
+        render_stats(slide, data)
 
-            line.fill.fore_color.rgb = ORANGE
+    elif layout == "quote":
+        render_quote(slide, data)
 
-            line.line.fill.background()
+    else:
+        render_bullets(slide, data)
 
-            # Main title
-            add_text(
-                slide,
-                0.8,
-                1.25,
-                11.5,
-                1.6,
-                presentation_title or title,
-                44,
-                WHITE,
-                True
-            )
+    add_footer(slide, number)
 
-            # Subtitle
-            add_text(
-                slide,
-                0.8,
-                3.35,
-                11.5,
-                1.3,
-                subtitle or title,
-                23,
-                GRAY
-            )
 
+# =========================================================
+# PRESENTATION
+# =========================================================
+
+def build_pptx(presentation_data: dict, output_path: str) -> str:
+    prs = Presentation()
+
+    prs.slide_width = SLIDE_W
+    prs.slide_height = SLIDE_H
+
+    # Remove default slide if one exists.
+    while len(prs.slides):
+        r_id = prs.slides._sldIdLst[0].rId
+        prs.part.drop_rel(r_id)
+        del prs.slides._sldIdLst[0]
+
+    title = presentation_data.get("title", "Presentation")
+    subtitle = presentation_data.get(
+        "subtitle",
+        "AI-generated presentation"
+    )
+
+    # -----------------------------------------------------
+    # TITLE SLIDE
+    # -----------------------------------------------------
+
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+
+    add_background(slide)
+
+    accent = slide.shapes.add_shape(
+        MSO_SHAPE.RECTANGLE,
+        0,
+        0,
+        Inches(0.22),
+        SLIDE_H,
+    )
+
+    accent.fill.solid()
+    accent.fill.fore_color.rgb = ACCENT
+    accent.line.fill.background()
+
+    add_text(
+        slide,
+        title,
+        Inches(1.05),
+        Inches(2.05),
+        Inches(10.8),
+        Inches(1.6),
+        size=38,
+        bold=True,
+        color=DARK,
+    )
+
+    add_text(
+        slide,
+        subtitle,
+        Inches(1.08),
+        Inches(3.75),
+        Inches(9.8),
+        Inches(1.0),
+        size=20,
+        color=MUTED,
+    )
+
+    # Decorative block
+    block = slide.shapes.add_shape(
+        MSO_SHAPE.ROUNDED_RECTANGLE,
+        Inches(10.75),
+        Inches(5.3),
+        Inches(1.45),
+        Inches(0.7),
+    )
+
+    block.fill.solid()
+    block.fill.fore_color.rgb = ACCENT
+    block.line.fill.background()
+
+    add_text(
+        slide,
+        "AI",
+        Inches(10.75),
+        Inches(5.43),
+        Inches(1.45),
+        Inches(0.35),
+        size=18,
+        bold=True,
+        color=WHITE,
+        align=PP_ALIGN.CENTER,
+    )
+
+    # -----------------------------------------------------
+    # CONTENT SLIDES
+    # -----------------------------------------------------
+
+    slides = presentation_data.get("slides", [])
+
+    for index, slide_data in enumerate(slides, start=2):
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
+
+        if not isinstance(slide_data, dict):
             continue
 
-        # ====================================================
-        # NORMAL SLIDE
-        # ====================================================
-
-        fill_background(
+        render_content_slide(
             slide,
-            LIGHT
+            slide_data,
+            index,
         )
 
-        # Orange side bar
-        side = slide.shapes.add_shape(
-            MSO_SHAPE.RECTANGLE,
-            0,
-            0,
-            Inches(0.32),
-            presentation.slide_height
-        )
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
 
-        side.fill.solid()
+    prs.save(str(output))
 
-        side.fill.fore_color.rgb = ORANGE
-
-        side.line.fill.background()
-
-        # Title
-        add_text(
-            slide,
-            0.85,
-            0.45,
-            11.3,
-            1.0,
-            title,
-            34,
-            DARK,
-            True
-        )
-
-        # Bullet container
-        box = slide.shapes.add_textbox(
-            Inches(0.9),
-            Inches(1.75),
-            Inches(11.4),
-            Inches(4.9)
-        )
-
-        frame = box.text_frame
-
-        frame.word_wrap = True
-
-        for i, bullet in enumerate(bullets):
-
-            paragraph = (
-                frame.paragraphs[0]
-                if i == 0
-                else frame.add_paragraph()
-            )
-
-            paragraph.text = (
-                "•  " + str(bullet)
-            )
-
-            paragraph.font.size = Pt(23)
-
-            paragraph.font.color.rgb = DARK
-
-            paragraph.space_after = Pt(15)
-
-        # Slide number
-        add_text(
-            slide,
-            12.0,
-            6.85,
-            0.6,
-            0.3,
-            str(index + 1),
-            14,
-            ORANGE,
-            True
-        )
-
-    # ========================================================
-    # SAVE
-    # ========================================================
-
-    presentation.save(path)
-
-    return path
+    return str(output)
