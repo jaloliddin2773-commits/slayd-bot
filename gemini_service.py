@@ -5,10 +5,11 @@ from config import GEMINI_API_KEY, logger
 
 genai.configure(api_key=GEMINI_API_KEY)
 
+# Faol va qo'llab-quvvatlanadigan fallback modellar ro'yxati
 FALLBACK_MODELS = [
+    "gemini-2.5-flash",
     "gemini-1.5-flash",
-    "gemini-1.5-pro",
-    "gemini-1.0-pro"
+    "gemini-1.5-pro"
 ]
 
 SYSTEM_PROMPT = """
@@ -33,9 +34,9 @@ JSON Formati:
 }
 
 Qoidalar:
-1. Matn foydalanuvchi yozgan tilda bo'lsin (O'zbek, Rus, Ingliz va h.k.).
+1. Matn foydalanuvchi yozgan tilda bo'lsin.
 2. Slaydlar soni: 5-8 ta.
-3. FAQAT toza JSON qaytaring. ```json va boshqa ortiqcha belgilarni ishlatmang.
+3. FAQAT toza JSON qaytaring. ```json bloklarini ishlatmang.
 """
 
 async def generate_presentation_structure(prompt_text: str) -> dict:
