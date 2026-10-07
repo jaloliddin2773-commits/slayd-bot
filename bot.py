@@ -1,100 +1,103 @@
-"""Telegram slayd boti. Ishga tushirish: python bot.py"""
-import logging
 import os
-import re
 import tempfile
-import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import logging
 
-import requests
 from telegram import Update
-from telegram.constants import ChatAction
 from telegram.ext import (
     Application,
     CommandHandler,
-    ContextTypes,
     MessageHandler,
+    ContextTypes,
     filters,
 )
 
 from slides import ask_gemini, build_pptx
 
-logging.basicConfig(level=logging.INFO)
-TOKEN = os.environ["TELEGRAM_TOKEN"]
 
-WELCOME = (
-    "Salom! 👋 Men taqdimot (slayd) tayyorlab beraman.\n\n"
-    "Mavzuni yozing, men PowerPoint fayl yuboraman.\n\n"
-    "Masalan:\n"
-    "• Global isish haqida taqdimot, 8 slayd\n"
-    "• O'zbekiston tarixi\n"
-    "• Sog'lom ovqatlanish, 6 slayd"
+# ============================================================
+# SETTINGS
+# ============================================================
+
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
+
+
+# ============================================================
+# LOGGING
+# ============================================================
+
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
 )
 
+logger = logging.getLogger(__name__)
+
+
+# ============================================================
+# /START
+# ============================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(WELCOME)
+
+    await update.message.reply_text(
+        "👋 Assalomu alaykum!\n\n"
+        "Men AI yordamida PowerPoint slayd yarataman.\n\n"
+        "Masalan:\n\n"
+        "📚 Sun'iy intellekt haqida 5 ta slayd\n\n"
+        "🌍 Global isish haqida 7 ta slayd\n\n"
+        "🧬 Biologiya: hujayra haqida 10 ta slayd\n\n"
+        "Mavzuni yozing 👇"
+    )
 
 
-async def make_slides(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    topic = (update.message.text or "").strip()
-    if len(topic) < 3:
-        await update.message.reply_text("Mavzuni to'liqroq yozing, iltimos.")
+# ============================================================
+# HELP
+# ============================================================
+
+async def help_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    await update.message.reply_text(
+        "📖 Qanday foydalanish kerak?\n\n"
+        "Shunchaki mavzu va slayd sonini yozing.\n\n"
+        "Misol:\n"
+        "👉 O'zbekiston tarixi haqida 8 ta slayd\n\n"
+        "Agar slayd sonini yozmasangiz, 7 ta slayd yaratiladi."
+    )
+
+
+# ============================================================
+# CREATE SLIDE
+# ============================================================
+
+async def create_presentation(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not update.message:
         return
 
-    wait = await update.message.reply_text("⏳ Taqdimot tayyorlanmoqda, 20-30 soniya kuting...")
-    await update.message.chat.send_action(ChatAction.UPLOAD_DOCUMENT)
+    request_text = update.message.text.strip()
 
-    try:
-        data = ask_gemini(topic)
-        name = re.sub(r"[^\w\-]+", "_", data.get("title", "taqdimot"))[:40] or "taqdimot"
-        with tempfile.TemporaryDirectory() as tmp:
-            path = build_pptx(data, os.path.join(tmp, f"{name}.pptx"))
-            with open(path, "rb") as f:
-                await update.message.reply_document(
-                    f,
-                    filename=f"{name}.pptx",
-                    caption=f"✅ Tayyor! {len(data['slides'])} ta slayd.",
-                )
-        await wait.delete()
-    except Exception as e:
-        logging.exception("Xatolik")
-        detail = type(e).__name__
-        resp = getattr(e, "response", None)
-        if resp is not None:
-            try:
-                detail += f" {resp.status_code}: {resp.json()['error']['message'][:200]}"
-            except Exception:
-                detail += f" {resp.status_code}"
-        elif not isinstance(e, requests.RequestException):
-            detail += f": {str(e)[:150]}"
-        await wait.edit_text(f"😔 Xatolik: {detail}")
+    if not request_text:
+        await update.message.reply_text(
+            "❗ Mavzuni yozing."
+        )
+        return
 
+    # Juda uzun so'rovni cheklaymiz
+    if len(request_text) > 2000:
 
-class _Ping(BaseHTTPRequestHandler):
-    """Render kabi xizmatlar port so'raydi, shu uchun kichik server."""
+        await update.message.reply_text(
+            "❗ So'rov juda uzun.\n"
+            "Iltimos, qisqaroq yozing."
+        )
 
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"ok")
+        return
 
-    def log_message(self, *args):
-        pass
-
-
-def _serve_ping():
-    port = int(os.environ.get("PORT", "10000"))
-    HTTPServer(("0.0.0.0", port), _Ping).serve_forever()
-
-
-def main():
-    threading.Thread(target=_serve_ping, daemon=True).start()
-    app = Application.builder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, make_slides))
-    app.run_polling()
-
-
-if __name__ == "__main__":
-    main()
+    # Kutish xabari
+    status_message = await update.message.reply_text(
+        "⏳ Taqdimotingiz tayyorlan
