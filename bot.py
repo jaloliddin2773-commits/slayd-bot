@@ -6,6 +6,7 @@ import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
+import requests
 from telegram import Update
 from telegram.constants import ChatAction
 from telegram.ext import (
@@ -56,9 +57,18 @@ async def make_slides(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     caption=f"✅ Tayyor! {len(data['slides'])} ta slayd.",
                 )
         await wait.delete()
-    except Exception:
+    except Exception as e:
         logging.exception("Xatolik")
-        await wait.edit_text("😔 Xatolik bo'ldi. Birozdan keyin qayta urinib ko'ring.")
+        detail = type(e).__name__
+        resp = getattr(e, "response", None)
+        if resp is not None:
+            try:
+                detail += f" {resp.status_code}: {resp.json()['error']['message'][:200]}"
+            except Exception:
+                detail += f" {resp.status_code}"
+        elif not isinstance(e, requests.RequestException):
+            detail += f": {str(e)[:150]}"
+        await wait.edit_text(f"😔 Xatolik: {detail}")
 
 
 class _Ping(BaseHTTPRequestHandler):
