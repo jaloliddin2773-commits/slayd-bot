@@ -44,7 +44,7 @@ def ask_gemini(request_text: str) -> dict:
         "generationConfig": {"responseMimeType": "application/json"},
     }
     resp = requests.post(
-        url, params={"key": GEMINI_API_KEY}, json=body, timeout=120
+        url, params={"key": GEMINI_API_KEY}, json=body, timeout=200
     )
     resp.raise_for_status()
     text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
