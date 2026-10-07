@@ -1,8 +1,3 @@
-"""
-AI Slayd Generator
-Gemini -> JSON -> PowerPoint
-"""
-
 import json
 import os
 import re
@@ -16,28 +11,27 @@ from pptx.util import Inches, Pt
 
 
 # ============================================================
-# GEMINI SETTINGS
+# SETTINGS
 # ============================================================
 
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 
-# Render Environment'da GEMINI_MODEL bo'lsa, o'sha ishlaydi.
-# Bo'lmasa 2.5 Flash ishlatiladi.
-GEMINI_MODEL = os.environ.get(
+# Render'da GEMINI_MODEL bo'lmasa, shu model ishlaydi
+GEMINI_MODEL = os.getenv(
     "GEMINI_MODEL",
     "gemini-2.5-flash"
 ).strip()
 
 
 # ============================================================
-# DESIGN COLORS
+# COLORS
 # ============================================================
 
-DARK = RGBColor(0x1F, 0x2A, 0x44)
-ORANGE = RGBColor(0xF2, 0x7A, 0x1A)
-LIGHT = RGBColor(0xF7, 0xF5, 0xF0)
-WHITE = RGBColor(0xFF, 0xFF, 0xFF)
-GRAY = RGBColor(0xD0, 0xD5, 0xE0)
+DARK = RGBColor(31, 42, 68)
+ORANGE = RGBColor(242, 122, 26)
+LIGHT = RGBColor(247, 245, 240)
+WHITE = RGBColor(255, 255, 255)
+GRAY = RGBColor(208, 213, 224)
 
 
 # ============================================================
@@ -48,52 +42,48 @@ PROMPT = """
 Sen professional PowerPoint prezentatsiya tayyorlovchi AI yordamchisan.
 
 Foydalanuvchi so'rovi:
-"{request}"
+__REQUEST__
 
 Vazifa:
-Ushbu mavzu asosida professional prezentatsiya strukturasi yarat.
+Ushbu mavzu asosida professional prezentatsiya yarat.
 
 Qoidalar:
 
-1. Foydalanuvchi qaysi tilda yozgan bo'lsa, shu tilda javob ber.
-2. Agar foydalanuvchi slayd sonini ko'rsatgan bo'lsa, aynan shuncha slayd yarat.
-3. Agar slayd soni ko'rsatilmagan bo'lsa, 7 ta slayd yarat.
-4. Minimal 3 ta, maksimal 12 ta slayd bo'lsin.
-5. Birinchi slayd — titul.
-6. Birinchi slaydda bullets bo'lmasin.
-7. Birinchi slaydda subtitle bo'lsin.
-8. Oxirgi slayd — Xulosa.
-9. Har bir oddiy slaydda 3-5 ta bullet bo'lsin.
-10. Har bir bullet qisqa va tushunarli bo'lsin.
-11. Bir bullet 15 so'zdan oshmasin.
-12. Faktlarni imkon qadar aniq yoz.
-13. Takroriy ma'lumotlardan foydalanma.
-14. Maktab/o'quv prezentatsiyasi bo'lsa, tushunarli tilda yoz.
-15. Professional va chiroyli prezentatsiya strukturasini yarat.
+- Foydalanuvchi qaysi tilda yozgan bo'lsa, shu tilda yoz.
+- Agar foydalanuvchi slayd sonini ko'rsatgan bo'lsa, aynan shuncha slayd yarat.
+- Agar son ko'rsatilmagan bo'lsa, 7 ta slayd yarat.
+- Minimal 3 ta, maksimal 12 ta slayd.
+- Birinchi slayd titul slayd bo'lsin.
+- Birinchi slaydda bullets bo'lmasin.
+- Birinchi slaydda subtitle bo'lsin.
+- Oxirgi slayd xulosa bo'lsin.
+- Oddiy slaydlarda 3-5 ta qisqa bullet bo'lsin.
+- Har bir bullet 15 so'zdan oshmasin.
+- Ma'lumotlar tushunarli va mantiqiy bo'lsin.
+- Bir xil ma'lumotni takrorlama.
 
 FAQAT JSON qaytar.
+Markdown ishlatma.
+```json ishlatma.
+Hech qanday qo'shimcha izoh yozma.
 
-Hech qanday markdown yozma.
-Hech qanday ```json ishlatma.
-Hech qanday izoh yozma.
-
-JSON format:
+JSON formati:
 
 {
   "title": "Prezentatsiya nomi",
   "slides": [
     {
-      "title": "Asosiy sarlavha",
+      "title": "Kirish",
       "subtitle": "Qisqa izoh",
       "bullets": []
     },
     {
-      "title": "Slayd sarlavhasi",
+      "title": "Asosiy mavzu",
       "subtitle": "",
       "bullets": [
-        "Birinchi qisqa fikr",
-        "Ikkinchi qisqa fikr",
-        "Uchinchi qisqa fikr"
+        "Birinchi fikr",
+        "Ikkinchi fikr",
+        "Uchinchi fikr"
       ]
     }
   ]
@@ -102,7 +92,7 @@ JSON format:
 
 
 # ============================================================
-# GEMINI API
+# GEMINI
 # ============================================================
 
 def ask_gemini(request_text: str) -> dict:
@@ -110,19 +100,23 @@ def ask_gemini(request_text: str) -> dict:
     if not GEMINI_API_KEY:
         raise RuntimeError(
             "GEMINI_API_KEY topilmadi. "
-            "Render Environment'da GEMINI_API_KEY qo'shing."
+            "Render Environment bo'limini tekshiring."
         )
+
+    # .format() ISHLATILMAYDI!
+    # Shuning uchun JSON {} sababli KeyError bo'lmaydi.
+    prompt = PROMPT.replace(
+        "__REQUEST__",
+        request_text
+    )
 
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{GEMINI_MODEL}:generateContent"
+        + GEMINI_MODEL
+        + ":generateContent"
     )
 
-    prompt = PROMPT.format(
-        request=request_text
-    )
-
-    body = {
+    payload = {
         "contents": [
             {
                 "parts": [
@@ -140,7 +134,7 @@ def ask_gemini(request_text: str) -> dict:
 
     last_error = None
 
-    # 4 marta urinib ko'ramiz
+    # Gemini vaqtincha band bo'lsa 4 marta urinadi
     for attempt in range(4):
 
         try:
@@ -150,52 +144,75 @@ def ask_gemini(request_text: str) -> dict:
                 params={
                     "key": GEMINI_API_KEY
                 },
-                json=body,
+                json=payload,
                 timeout=180
             )
 
-            # 503 / 429 bo'lsa qayta urinadi
-            if response.status_code in (429, 500, 502, 503, 504):
+            # Vaqtinchalik server xatolari
+            if response.status_code in (
+                429,
+                500,
+                502,
+                503,
+                504
+            ):
 
                 last_error = (
-                    f"Gemini server xatosi: "
-                    f"HTTP {response.status_code}"
+                    f"Gemini HTTP {response.status_code}"
                 )
 
                 if attempt < 3:
                     time.sleep(3 * (attempt + 1))
                     continue
 
-                raise RuntimeError(last_error)
+                raise RuntimeError(
+                    "Gemini serveri vaqtincha band. "
+                    "Bir necha daqiqadan keyin qayta urinib ko'ring."
+                )
 
             response.raise_for_status()
 
             result = response.json()
 
-            candidates = result.get("candidates", [])
+            candidates = result.get(
+                "candidates",
+                []
+            )
 
             if not candidates:
                 raise RuntimeError(
                     "Gemini javob qaytarmadi."
                 )
 
-            content = candidates[0].get("content", {})
+            content = candidates[0].get(
+                "content",
+                {}
+            )
 
-            parts = content.get("parts", [])
+            parts = content.get(
+                "parts",
+                []
+            )
 
             if not parts:
                 raise RuntimeError(
                     "Gemini javobida matn topilmadi."
                 )
 
-            text = parts[0].get("text", "").strip()
+            text = parts[0].get(
+                "text",
+                ""
+            ).strip()
 
             if not text:
                 raise RuntimeError(
                     "Gemini bo'sh javob qaytardi."
                 )
 
-            # Markdown JSON bo'lsa tozalaymiz
+            # ==================================================
+            # CLEAN JSON
+            # ==================================================
+
             text = re.sub(
                 r"^```json\s*",
                 "",
@@ -219,11 +236,12 @@ def ask_gemini(request_text: str) -> dict:
 
             # JSON parse
             try:
+
                 data = json.loads(text)
 
             except json.JSONDecodeError:
 
-                # JSON ichidan { ... } qismini topishga urinamiz
+                # Agar Gemini ortiqcha matn qo'shgan bo'lsa
                 start = text.find("{")
                 end = text.rfind("}")
 
@@ -236,78 +254,112 @@ def ask_gemini(request_text: str) -> dict:
                     text[start:end + 1]
                 )
 
-            # =================================================
+            # ==================================================
             # VALIDATION
-            # =================================================
+            # ==================================================
 
-            slides = data.get("slides")
+            if not isinstance(data, dict):
+                raise RuntimeError(
+                    "Gemini noto'g'ri format qaytardi."
+                )
+
+            slides = data.get(
+                "slides",
+                []
+            )
 
             if not isinstance(slides, list):
                 raise RuntimeError(
-                    "Gemini 'slides' ro'yxatini qaytarmadi."
+                    "Slaydlar ro'yxati topilmadi."
                 )
 
             if len(slides) == 0:
                 raise RuntimeError(
-                    "Gemini slayd yaratmadi."
+                    "Gemini hech qanday slayd yaratmadi."
                 )
 
-            # Maximum 12
-            data["slides"] = slides[:12]
+            # Maksimum 12 ta
+            slides = slides[:12]
 
-            # Har bir slaydni tozalash
-            for slide in data["slides"]:
+            # Har bir slaydni standartlashtiramiz
+            cleaned_slides = []
+
+            for slide in slides:
 
                 if not isinstance(slide, dict):
                     continue
 
-                slide.setdefault(
-                    "title",
-                    "Slayd"
+                title = str(
+                    slide.get(
+                        "title",
+                        "Slayd"
+                    )
                 )
 
-                slide.setdefault(
-                    "subtitle",
-                    ""
+                subtitle = str(
+                    slide.get(
+                        "subtitle",
+                        ""
+                    )
                 )
 
-                slide.setdefault(
+                bullets = slide.get(
                     "bullets",
                     []
                 )
 
                 if not isinstance(
-                    slide["bullets"],
+                    bullets,
                     list
                 ):
-                    slide["bullets"] = []
+                    bullets = []
 
-            return data
+                bullets = [
+                    str(x).strip()
+                    for x in bullets
+                    if str(x).strip()
+                ]
 
-        except requests.RequestException as e:
+                cleaned_slides.append({
+                    "title": title,
+                    "subtitle": subtitle,
+                    "bullets": bullets
+                })
 
-            last_error = str(e)
+            if not cleaned_slides:
+                raise RuntimeError(
+                    "Slaydlar qayta ishlanmadi."
+                )
+
+            return {
+                "title": str(
+                    data.get(
+                        "title",
+                        "Taqdimot"
+                    )
+                ),
+                "slides": cleaned_slides
+            }
+
+        except requests.RequestException as error:
+
+            last_error = str(error)
 
             if attempt < 3:
                 time.sleep(3 * (attempt + 1))
                 continue
 
             raise RuntimeError(
-                f"Gemini bilan ulanishda xatolik: {last_error}"
+                f"Gemini bilan bog'lanishda xatolik: {last_error}"
             )
 
-        except Exception as e:
-
-            # Biz yaratgan xatolarni qayta ko'taramiz
-            raise e
-
     raise RuntimeError(
-        last_error or "Gemini noma'lum xato berdi."
+        last_error or "Noma'lum Gemini xatosi."
     )
 
 
 # ============================================================
-# POWERPOINT HELPERS
+# POWERPOINT FUNCTIONS
 # ============================================================
 
 def fill_background(slide, color):
@@ -338,11 +390,11 @@ def add_text(
         Inches(height)
     )
 
-    text_frame = box.text_frame
+    frame = box.text_frame
 
-    text_frame.word_wrap = True
+    frame.word_wrap = True
 
-    paragraph = text_frame.paragraphs[0]
+    paragraph = frame.paragraphs[0]
 
     paragraph.text = str(text)
 
@@ -355,23 +407,8 @@ def add_text(
     return box
 
 
-def add_number(slide, number):
-
-    add_text(
-        slide,
-        12.0,
-        6.85,
-        0.7,
-        0.3,
-        str(number),
-        14,
-        ORANGE,
-        True
-    )
-
-
 # ============================================================
-# CREATE POWERPOINT
+# BUILD PPTX
 # ============================================================
 
 def build_pptx(data: dict, path: str) -> str:
@@ -383,19 +420,22 @@ def build_pptx(data: dict, path: str) -> str:
 
     presentation.slide_height = Inches(7.5)
 
-    blank_layout = presentation.slide_layouts[6]
+    blank = presentation.slide_layouts[6]
 
-    slides = data.get("slides", [])
+    slides = data.get(
+        "slides",
+        []
+    )
 
     presentation_title = data.get(
         "title",
-        "AI Presentation"
+        "Taqdimot"
     )
 
     for index, slide_data in enumerate(slides):
 
         slide = presentation.slides.add_slide(
-            blank_layout
+            blank
         )
 
         title = slide_data.get(
@@ -429,7 +469,7 @@ def build_pptx(data: dict, path: str) -> str:
                 MSO_SHAPE.RECTANGLE,
                 Inches(0.8),
                 Inches(3.0),
-                Inches(1.6),
+                Inches(1.7),
                 Inches(0.12)
             )
 
@@ -439,13 +479,13 @@ def build_pptx(data: dict, path: str) -> str:
 
             line.line.fill.background()
 
-            # Title
+            # Main title
             add_text(
                 slide,
                 0.8,
                 1.25,
                 11.5,
-                1.7,
+                1.6,
                 presentation_title or title,
                 44,
                 WHITE,
@@ -458,11 +498,10 @@ def build_pptx(data: dict, path: str) -> str:
                 0.8,
                 3.35,
                 11.5,
-                1.2,
+                1.3,
                 subtitle or title,
                 23,
-                GRAY,
-                False
+                GRAY
             )
 
             continue
@@ -477,26 +516,26 @@ def build_pptx(data: dict, path: str) -> str:
         )
 
         # Orange side bar
-        side_bar = slide.shapes.add_shape(
+        side = slide.shapes.add_shape(
             MSO_SHAPE.RECTANGLE,
-            Inches(0),
-            Inches(0),
+            0,
+            0,
             Inches(0.32),
             presentation.slide_height
         )
 
-        side_bar.fill.solid()
+        side.fill.solid()
 
-        side_bar.fill.fore_color.rgb = ORANGE
+        side.fill.fore_color.rgb = ORANGE
 
-        side_bar.line.fill.background()
+        side.line.fill.background()
 
         # Title
         add_text(
             slide,
             0.85,
             0.45,
-            11.2,
+            11.3,
             1.0,
             title,
             34,
@@ -504,7 +543,7 @@ def build_pptx(data: dict, path: str) -> str:
             True
         )
 
-        # Bullet box
+        # Bullet container
         box = slide.shapes.add_textbox(
             Inches(0.9),
             Inches(1.75),
@@ -512,18 +551,16 @@ def build_pptx(data: dict, path: str) -> str:
             Inches(4.9)
         )
 
-        text_frame = box.text_frame
+        frame = box.text_frame
 
-        text_frame.word_wrap = True
+        frame.word_wrap = True
 
-        for bullet_index, bullet in enumerate(
-            bullets
-        ):
+        for i, bullet in enumerate(bullets):
 
             paragraph = (
-                text_frame.paragraphs[0]
-                if bullet_index == 0
-                else text_frame.add_paragraph()
+                frame.paragraphs[0]
+                if i == 0
+                else frame.add_paragraph()
             )
 
             paragraph.text = (
@@ -537,9 +574,16 @@ def build_pptx(data: dict, path: str) -> str:
             paragraph.space_after = Pt(15)
 
         # Slide number
-        add_number(
+        add_text(
             slide,
-            index + 1
+            12.0,
+            6.85,
+            0.6,
+            0.3,
+            str(index + 1),
+            14,
+            ORANGE,
+            True
         )
 
     # ========================================================
