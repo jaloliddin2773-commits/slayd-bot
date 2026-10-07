@@ -1,21 +1,31 @@
 import asyncio
 import logging
 import os
+import re
 import tempfile
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from telegram import Update
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
 from telegram.ext import (
     Application,
     CommandHandler,
+    CallbackQueryHandler,
     ContextTypes,
     MessageHandler,
     filters,
 )
 
-from slides import ask_gemini, build_pptx
+from slides import (
+    ask_gemini,
+    build_pptx,
+    build_pdf,
+)
 
 
 # =========================================================
@@ -23,7 +33,6 @@ from slides import ask_gemini, build_pptx
 # =========================================================
 
 TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
-
 PORT = int(os.getenv("PORT", "10000"))
 
 MAX_REQUEST_LENGTH = 2000
@@ -50,7 +59,10 @@ class HealthHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         self.send_response(200)
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header(
+            "Content-Type",
+            "text/plain; charset=utf-8",
+        )
         self.end_headers()
         self.wfile.write(b"SLAYD BOT OK")
 
@@ -71,64 +83,213 @@ def start_health_server():
 
     thread.start()
 
-    logger.info("Health server started on port %s", PORT)
+    logger.info(
+        "Health server started on port %s",
+        PORT,
+    )
+
+
+# =========================================================
+# FORMAT MENU
+# =========================================================
+
+def format_keyboard():
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                "📊 PPTX",
+                callback_data="format:pptx",
+            ),
+            InlineKeyboardButton(
+                "📄 PDF",
+                callback_data="format:pdf",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "📊📄 PPTX + PDF",
+                callback_data="format:both",
+            ),
+        ],
+    ]
+
+    return InlineKeyboardMarkup(keyboard)
+
+
+async def show_format_menu(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    text = (
+        "🎨 Prezentatsiya formatini tanlang:\n\n"
+        "📊 PPTX — tahrirlash mumkin\n"
+        "📄 PDF — tayyor hujjat\n"
+        "📊📄 PPTX + PDF — ikkalasi ham"
+    )
+
+    if update.message:
+        await update.message.reply_text(
+            text,
+            reply_markup=format_keyboard(),
+        )
+
+    elif update.callback_query:
+        await update.callback_query.edit_message_text(
+            text,
+            reply_markup=format_keyboard(),
+        )
 
 
 # =========================================================
 # START
 # =========================================================
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    context.user_data["format"] = None
+
     text = (
         "👋 Assalomu alaykum!\n\n"
-        "Men AI yordamida PowerPoint prezentatsiya yarataman.\n\n"
-        "Masalan:\n\n"
-        "📚 8 slaydlik \"Sun'iy intellekt\" "
-        "mavzusida prezentatsiya yarat.\n\n"
-        "Yoki:\n\n"
-        "🎓 Ingliz tilida 10 slaydlik "
-        "IELTS haqida professional prezentatsiya qil.\n\n"
-        "Mavzuni yozing — qolganini men qilaman."
+        "🤖 Men AI yordamida professional "
+        "prezentatsiyalar yarataman.\n\n"
+        "Avval formatni tanlang:"
     )
 
-    await update.message.reply_text(text)
+    await update.message.reply_text(
+        text,
+        reply_markup=format_keyboard(),
+    )
 
 
 # =========================================================
-# HELP
+# FORMAT CALLBACK
 # =========================================================
+
+async def format_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    query = update.callback_query
+
+    await query.answer()
+
+    value = query.data.split(":", 1)[1]
+
+    context.user_data["format"] = value
+
+    names = {
+        "pptx": "📊 PPTX",
+        "pdf": "📄 PDF",
+        "both": "📊📄 PPTX + PDF",
+    }
+
+    selected = names.get(
+        value,
+        "📊 PPTX",
+    )
+
+    await query.edit_message_text(
+        f"✅ Tanlandi: {selected}\n\n"
+        "Endi menga mavzuni yozing.\n\n"
+        "Masalan:\n"
+        "«Sun'iy intellekt haqida "
+        "8 slaydlik o'zbekcha prezentatsiya»"
+    )
+
+
+# =========================================================
+# COMMANDS
+# =========================================================
+
+async def pptx_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    context.user_data["format"] = "pptx"
+
+    await update.message.reply_text(
+        "📊 PPTX rejimi tanlandi.\n\n"
+        "Mavzuni yozing."
+    )
+
+
+async def pdf_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    context.user_data["format"] = "pdf"
+
+    await update.message.reply_text(
+        "📄 PDF rejimi tanlandi.\n\n"
+        "Mavzuni yozing."
+    )
+
+
+async def both_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    context.user_data["format"] = "both"
+
+    await update.message.reply_text(
+        "📊📄 PPTX + PDF rejimi tanlandi.\n\n"
+        "Mavzuni yozing."
+    )
+
 
 async def help_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
     text = (
-        "📖 Qanday ishlaydi?\n\n"
-        "1️⃣ Mavzuni yozasiz.\n"
-        "2️⃣ Slayd sonini ko'rsatasiz.\n"
-        "3️⃣ AI kontentni tayyorlaydi.\n"
-        "4️⃣ Men PowerPoint fayl yarataman.\n"
-        "5️⃣ Tayyor .pptx faylni yuboraman.\n\n"
-        "Misol:\n"
-        "«Global warming haqida 7 slaydlik "
-        "inglizcha prezentatsiya yarat»"
+        "📖 BUYRUQLAR\n\n"
+        "/start — boshlash\n"
+        "/pptx — PPTX yaratish\n"
+        "/pdf — PDF yaratish\n"
+        "/both — PPTX + PDF\n"
+        "/help — yordam\n\n"
+        "Yoki /start bosib formatni "
+        "tugma orqali tanlang."
     )
 
     await update.message.reply_text(text)
 
 
 # =========================================================
-# GENERATE
+# FILE NAME
+# =========================================================
+
+def safe_filename(title: str) -> str:
+    title = re.sub(
+        r'[\\/:*?"<>|]+',
+        "",
+        title,
+    )
+
+    title = re.sub(
+        r"\s+",
+        "_",
+        title.strip(),
+    )
+
+    if not title:
+        title = "presentation"
+
+    return title[:80]
+
+
+# =========================================================
+# GENERATE PRESENTATION
 # =========================================================
 
 async def generate_presentation(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
-    if not update.message or not update.message.text:
+    if not update.message:
         return
-
-    user_id = update.effective_user.id
 
     request_text = update.message.text.strip()
 
@@ -138,13 +299,34 @@ async def generate_presentation(
     if len(request_text) > MAX_REQUEST_LENGTH:
         await update.message.reply_text(
             f"❌ So'rov juda uzun.\n"
-            f"Maksimal: {MAX_REQUEST_LENGTH} ta belgi."
+            f"Maksimum {MAX_REQUEST_LENGTH} belgi."
         )
         return
 
     # -----------------------------------------------------
-    # Cooldown
+    # FORMAT
     # -----------------------------------------------------
+
+    output_format = context.user_data.get(
+        "format"
+    )
+
+    if output_format not in (
+        "pptx",
+        "pdf",
+        "both",
+    ):
+        await update.message.reply_text(
+            "Avval formatni tanlang:",
+            reply_markup=format_keyboard(),
+        )
+        return
+
+    # -----------------------------------------------------
+    # COOLDOWN
+    # -----------------------------------------------------
+
+    user_id = update.effective_user.id
 
     last_requests = context.application.bot_data.setdefault(
         "last_requests",
@@ -152,13 +334,20 @@ async def generate_presentation(
     )
 
     now = time.time()
-    last_time = last_requests.get(user_id, 0)
+    last_time = last_requests.get(
+        user_id,
+        0,
+    )
 
     if now - last_time < COOLDOWN_SECONDS:
-        wait = int(COOLDOWN_SECONDS - (now - last_time)) + 1
+
+        wait = int(
+            COOLDOWN_SECONDS
+            - (now - last_time)
+        ) + 1
 
         await update.message.reply_text(
-            f"⏳ Biroz kuting: {wait} soniya."
+            f"⏳ {wait} soniya kuting."
         )
 
         return
@@ -166,22 +355,25 @@ async def generate_presentation(
     last_requests[user_id] = now
 
     # -----------------------------------------------------
-    # Concurrency limit
+    # CONCURRENCY
     # -----------------------------------------------------
 
-    semaphore = context.application.bot_data["generation_semaphore"]
+    semaphore = (
+        context.application
+        .bot_data["generation_semaphore"]
+    )
 
     async with semaphore:
 
         status = await update.message.reply_text(
-            "🧠 Mavzu tahlil qilinmoqda...\n"
-            "Reja va slaydlar tayyorlanmoqda."
+            "🧠 AI mavzuni tahlil qilmoqda..."
         )
 
         try:
-            # ---------------------------------------------
+
+            # =============================================
             # AI
-            # ---------------------------------------------
+            # =============================================
 
             presentation_data = await asyncio.to_thread(
                 ask_gemini,
@@ -194,49 +386,126 @@ async def generate_presentation(
             )
 
             await status.edit_text(
-                "🎨 Dizayn tayyorlanmoqda...\n"
+                "🎨 Professional dizayn "
+                "tayyorlanmoqda...\n\n"
                 f"AI: {model}"
             )
 
-            # ---------------------------------------------
-            # PPTX
-            # ---------------------------------------------
+            # =============================================
+            # FILES
+            # =============================================
 
             with tempfile.TemporaryDirectory() as temp_dir:
-
-                file_path = os.path.join(
-                    temp_dir,
-                    "presentation.pptx",
-                )
-
-                await asyncio.to_thread(
-                    build_pptx,
-                    presentation_data,
-                    file_path,
-                )
 
                 title = presentation_data.get(
                     "title",
                     "Presentation",
                 )
 
-                await status.edit_text(
-                    "✅ Tayyor!\n"
-                    "PowerPoint fayl yuborilmoqda..."
+                filename = safe_filename(title)
+
+                pptx_path = os.path.join(
+                    temp_dir,
+                    f"{filename}.pptx",
                 )
 
-                with open(file_path, "rb") as document:
+                pdf_path = os.path.join(
+                    temp_dir,
+                    f"{filename}.pdf",
+                )
 
-                    await update.message.reply_document(
-                        document=document,
-                        filename="presentation.pptx",
-                        caption=(
-                            f"🎓 {title}\n\n"
-                            "Generated by AI Presentation Bot"
-                        ),
+                # -----------------------------------------
+                # PPTX
+                # -----------------------------------------
+
+                if output_format in (
+                    "pptx",
+                    "both",
+                ):
+
+                    await asyncio.to_thread(
+                        build_pptx,
+                        presentation_data,
+                        pptx_path,
                     )
 
+                # -----------------------------------------
+                # PDF
+                # -----------------------------------------
+
+                if output_format in (
+                    "pdf",
+                    "both",
+                ):
+
+                    await asyncio.to_thread(
+                        build_pdf,
+                        presentation_data,
+                        pdf_path,
+                    )
+
+                # =========================================
+                # SEND
+                # =========================================
+
+                await status.edit_text(
+                    "✅ Tayyor!\n"
+                    "Fayl yuborilmoqda..."
+                )
+
+                # -----------------------------------------
+                # PPTX
+                # -----------------------------------------
+
+                if output_format in (
+                    "pptx",
+                    "both",
+                ):
+
+                    with open(
+                        pptx_path,
+                        "rb",
+                    ) as document:
+
+                        await update.message.reply_document(
+                            document=document,
+                            filename=f"{filename}.pptx",
+                            caption=(
+                                f"📊 {title}\n\n"
+                                "PowerPoint presentation"
+                            ),
+                        )
+
+                # -----------------------------------------
+                # PDF
+                # -----------------------------------------
+
+                if output_format in (
+                    "pdf",
+                    "both",
+                ):
+
+                    with open(
+                        pdf_path,
+                        "rb",
+                    ) as document:
+
+                        await update.message.reply_document(
+                            document=document,
+                            filename=f"{filename}.pdf",
+                            caption=(
+                                f"📄 {title}\n\n"
+                                "PDF presentation"
+                            ),
+                        )
+
                 await status.delete()
+
+                # -----------------------------------------
+                # READY FOR NEXT REQUEST
+                # -----------------------------------------
+
+                context.user_data["format"] = None
 
         except Exception as exc:
 
@@ -246,14 +515,14 @@ async def generate_presentation(
             )
 
             await status.edit_text(
-                "❌ Prezentatsiyani yaratishda xatolik yuz berdi.\n\n"
-                "Server yoki AI vaqtincha band bo‘lishi mumkin.\n"
-                "Birozdan keyin yana urinib ko‘ring."
+                "❌ Prezentatsiya yaratishda "
+                "xatolik yuz berdi.\n\n"
+                "Birozdan keyin yana urinib ko'ring."
             )
 
 
 # =========================================================
-# ERROR HANDLER
+# ERROR
 # =========================================================
 
 async def error_handler(
@@ -277,7 +546,11 @@ def main():
             "TELEGRAM_TOKEN environment variable is missing."
         )
 
-    if not os.getenv("GEMINI_API_KEY", "").strip():
+    if not os.getenv(
+        "GEMINI_API_KEY",
+        "",
+    ).strip():
+
         raise RuntimeError(
             "GEMINI_API_KEY environment variable is missing."
         )
@@ -290,17 +563,59 @@ def main():
         .build()
     )
 
-    application.bot_data["generation_semaphore"] = asyncio.Semaphore(2)
-    application.bot_data["last_requests"] = {}
+    application.bot_data[
+        "generation_semaphore"
+    ] = asyncio.Semaphore(2)
 
+    application.bot_data[
+        "last_requests"
+    ] = {}
+
+    # Commands
     application.add_handler(
-        CommandHandler("start", start)
+        CommandHandler(
+            "start",
+            start,
+        )
     )
 
     application.add_handler(
-        CommandHandler("help", help_command)
+        CommandHandler(
+            "pptx",
+            pptx_command,
+        )
     )
 
+    application.add_handler(
+        CommandHandler(
+            "pdf",
+            pdf_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "both",
+            both_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "help",
+            help_command,
+        )
+    )
+
+    # Format buttons
+    application.add_handler(
+        CallbackQueryHandler(
+            format_callback,
+            pattern=r"^format:",
+        )
+    )
+
+    # User text
     application.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
@@ -312,7 +627,9 @@ def main():
         error_handler
     )
 
-    logger.info("SLAYD BOT starting...")
+    logger.info(
+        "SLAYD BOT starting..."
+    )
 
     application.run_polling(
         drop_pending_updates=True
