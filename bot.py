@@ -35,7 +35,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     USERS_SET.add(user_id)
 
     welcome_text = (
-        "👋 **Xush kelibsiz! Professional Slayd Botiga xush kelibsiz.**\n\n"
+        "👋 **Xush kelibsiz! Professional Slayd Botiga.**\n\n"
         "Menga istalgan mavzuni yuboring, men sizga mos ravishda taqdimot tayyorlab beraman.\n\n"
         "**Formatni tanlash komandalari:**\n"
         "/pptx - Faqat PPTX formatida\n"
