@@ -1,16 +1,14 @@
 import json
 import logging
-from google import genai
-from google.genai import types
+import google.generativeai as genai
 from config import GEMINI_API_KEY, logger
 
-client = genai.Client(api_key=GEMINI_API_KEY)
+genai.configure(api_key=GEMINI_API_KEY)
 
-# Fallback modellari sirasi
 FALLBACK_MODELS = [
-    "gemini-2.5-flash",
     "gemini-1.5-flash",
-    "gemini-1.5-pro"
+    "gemini-1.5-pro",
+    "gemini-1.0-pro"
 ]
 
 SYSTEM_PROMPT = """
@@ -45,15 +43,14 @@ async def generate_presentation_structure(prompt_text: str) -> dict:
     for model_name in FALLBACK_MODELS:
         try:
             logger.info(f"Gemini so'rovi yuborilmoqda, model: {model_name}")
-            response = client.models.generate_content(
-                model=model_name,
-                contents=f"{SYSTEM_PROMPT}\n\nMavzu: {prompt_text}",
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json"
-                )
+            model = genai.GenerativeModel(
+                model_name=model_name,
+                generation_config={"response_mime_type": "application/json"}
             )
             
+            response = model.generate_content(f"{SYSTEM_PROMPT}\n\nMavzu: {prompt_text}")
             clean_text = response.text.strip()
+            
             if clean_text.startswith("```json"):
                 clean_text = clean_text[7:]
             if clean_text.startswith("```"):
